@@ -1,0 +1,84 @@
+version: "3.9"
+
+services:
+  ai-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai_engine
+    restart: unless-stopped
+
+    # Solo necesitas exponer 8765 si quieres monitorear/health desde el host.
+    ports:
+      - "8765:8765/tcp"
+      # El RTP de external_media no necesita salir al host, solo a Asterisk
+      # pero si quieres mantenerlo visible, puedes dejar:
+      # - "18080-18200:18080-18200/udp"
+
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./scripts:/app/scripts
+      - ./models:/app/models
+      - ./logs:/app/logs
+      # Si quieres compartir media con Asterisk para fallback, usa la ruta relativa:
+      # (asumiendo que Asterisk-AI-Voice-Agent y asterisk-lab están al mismo nivel)
+      - ../asterisk-lab/asterisk_media:/tmp/asterisk_media
+
+    env_file:
+      - .env
+
+    environment:
+      # Aseguramos algunas claves críticas desde aquí (pueden estar también en .env)
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+      # Donde vive Asterisk dentro de la red Docker
+      - ASTERISK_HOST=asterisk-lab
+      - ASTERISK_PORT=8088
+      # Quién soy yo (ai_engine) para ExternalMedia
+      - EXTERNAL_MEDIA_RTP_HOST=0.0.0.0
+      - EXTERNAL_MEDIA_ADVERTISE_HOST=ai_engine
+
+    tty: true
+    stdin_open: true
+
+    networks:
+      - voice_net
+
+  local-ai-server:
+    build:
+      context: ./local_ai_server
+      dockerfile: Dockerfile
+    container_name: local_ai_server
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./models:/app/models
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOCAL_LOG_LEVEL=${LOCAL_LOG_LEVEL:-INFO}
+      - LOCAL_DEBUG=${LOCAL_DEBUG:-0}
+      - LOCAL_STT_IDLE_MS=${LOCAL_STT_IDLE_MS:-5000}
+      - LOCAL_LLM_INFER_TIMEOUT_SEC=${LOCAL_LLM_INFER_TIMEOUT_SEC:-30}
+      - LOCAL_LLM_MODEL_PATH=${LOCAL_LLM_MODEL_PATH:-/app/models/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf}
+      - LOCAL_LLM_THREADS=${LOCAL_LLM_THREADS:-16}
+      - LOCAL_LLM_CONTEXT=${LOCAL_LLM_CONTEXT:-4096}
+      - LOCAL_LLM_BATCH=${LOCAL_LLM_BATCH:-256}
+      - LOCAL_LLM_MAX_TOKENS=${LOCAL_LLM_MAX_TOKENS:-32}
+      - LOCAL_LLM_TEMPERATURE=${LOCAL_LLM_TEMPERATURE:-0.2}
+      - LOCAL_LLM_TOP_P=${LOCAL_LLM_TOP_P:-0.85}
+      - LOCAL_LLM_REPEAT_PENALTY=${LOCAL_LLM_REPEAT_PENALTY:-1.05}
+      - LOCAL_STT_MODEL_PATH=${LOCAL_STT_MODEL_PATH:-/app/models/stt/vosk-model-en-us-0.22}
+      - LOCAL_TTS_MODEL_PATH=${LOCAL_TTS_MODEL_PATH:-/app/models/tts/en_US-lessac-medium.onnx}
+      - LOCAL_LLM_USE_MLOCK=${LOCAL_LLM_USE_MLOCK:-0}
+
+    networks:
+      - voice_net
+
+networks:
+  voice_net:
+    external: true
