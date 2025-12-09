@@ -8,10 +8,10 @@ audiosocket:
   port: 8090
 barge_in:
   enabled: true
-  energy_threshold: 400
-  initial_protection_ms: 100
-  min_ms: 150
-  post_tts_end_protection_ms: 800  # Increased from 100 to prevent agent hearing its own voice tail
+  energy_threshold: 25
+  initial_protection_ms: 0
+  min_ms: 80
+  post_tts_end_protection_ms: 80  # Increased from 100 to prevent agent hearing its own voice tail
 config_version: 4
 contexts:
   demo_deepgram:
@@ -249,7 +249,7 @@ pipelines:
       - request_transcript
     options:
       stt:
-        ws_url: wss://agent.deepgram.com/v1/listen
+        ws_url: "wss://agent.deepgram.com/v1/listen?language=es-419&model=nova"
       tts:
         base_url: https://api.deepgram.com
       llm:
@@ -358,9 +358,9 @@ providers:
     diarize: false                      # Desactiva para monologo simple
     ner: true                           # Mejora reconocimiento de nombres/entidades
     tier: "nova"
-    min_utterance_length_ms: 300        # Descarta utterances < 500ms
-    ignore_utterance_shorter_than: 0.25
-    utterance_silence_threshold: 0.3
+    min_utterance_length_ms: 150        # Descarta utterances < 500ms
+    ignore_utterance_shorter_than: 0.15
+    utterance_silence_threshold: 0.08
     log_level: "debug"
     save_audio_files: true
     audio_dump_path: "/tmp/deepgram_audio"
@@ -488,14 +488,14 @@ streaming:
   empty_backoff_ticks_max: 5
   fallback_timeout_ms: 8000
   greeting_min_start_ms: 40
-  jitter_buffer_ms: 950
+  jitter_buffer_ms: 250
   keepalive_interval_ms: 5000
   low_watermark_ms: 80
   min_start_ms: 120
   normalizer:
     enabled: true
-    max_gain_db: 18.0
-    target_rms: 1400
+    max_gain_db: 45.0
+    target_rms: 500
   provider_grace_ms: 200
   sample_rate: 8000
   diag_enable_taps: true
@@ -505,15 +505,15 @@ streaming:
 vad:
   enhanced_enabled: true
   fallback_buffer_size: 128000
-  fallback_enabled: true
+  fallback_enabled: false
   fallback_interval_ms: 4000
-  max_utterance_duration_ms: 10000
-  min_utterance_duration_ms: 600
+  max_utterance_duration_ms: 400
+  min_utterance_duration_ms: 300
   use_provider_vad: false
-  utterance_padding_ms: 200
-  webrtc_aggressiveness: 1
-  webrtc_end_silence_frames: 50
-  webrtc_start_frames: 3
+  utterance_padding_ms: 150
+  webrtc_aggressiveness: 0
+  webrtc_end_silence_frames: 30
+  webrtc_start_frames: 2
 
 # Tool calling configuration (v4.2 - Agent Outbound)
 tools:
