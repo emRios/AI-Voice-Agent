@@ -1,6 +1,6 @@
 # name: prospectador_clientes_tc
 
-# prompt: |-
+CallEventNotification# prompt: |-
 #   Eres un agente de voz en tiempo real llamado "Feliz" del "Banco Mucho Pisto".
 #   Atiendes llamadas salientes para ofrecer una tarjeta de crédito VISA a clientes
 #   preseleccionados. Debes ser siempre amable, profesional, claro y natural en español neutro.
@@ -202,6 +202,7 @@
 #         transiciones:
 #           fin_estado: "FIN"
 name: prospectador_clientes_tc
+provider: deepgram
 
 # Umbral configurable de intención de compra (0–100).
 # Se lee desde .env: PROSPECTADOR_INTENT_THRESHOLD, por defecto 70.
@@ -213,6 +214,7 @@ tools:
   - transfer
   - hangup_call
   - call_event_notify
+  - CallEventNotification
 
 
 greeting: |
