@@ -71,9 +71,16 @@ def inject_asterisk_credentials(config_data: Dict[str, Any]) -> None:
     Complexity: 2
     """
     asterisk_yaml = (config_data.get('asterisk') or {}) if isinstance(config_data.get('asterisk'), dict) else {}
+
+    port_env = os.getenv("ASTERISK_PORT")
+    try:
+        port = int(port_env) if port_env is not None else 8088
+    except ValueError:
+        port = 8088
     
     config_data['asterisk'] = {
         "host": os.getenv("ASTERISK_HOST", "127.0.0.1"),
+        "port": port,
         "username": os.getenv("ASTERISK_ARI_USERNAME") or os.getenv("ARI_USERNAME"),
         "password": os.getenv("ASTERISK_ARI_PASSWORD") or os.getenv("ARI_PASSWORD"),
         "app_name": asterisk_yaml.get("app_name", "asterisk-ai-voice-agent")
