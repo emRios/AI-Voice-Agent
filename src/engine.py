@@ -12,6 +12,8 @@ import base64
 from collections import deque
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Set, Tuple
+from src.core.ari_url import build_ari_base_url
+
 
 # Simple audio capture system removed - not used in production
 
@@ -150,7 +152,15 @@ class Engine:
 
     def __init__(self, config: AppConfig):
         self.config = config
-        base_url = f"http://{config.asterisk.host}:{config.asterisk.port}/ari"
+
+        #base_url = f"http://{config.asterisk.host}:{config.asterisk.port}/ari"
+        base_url = build_ari_base_url(
+            ari_base_url=getattr(config.asterisk, "ari_base_url", None),
+            scheme=getattr(config.asterisk, "scheme", "http"),
+            host=config.asterisk.host,
+            port=config.asterisk.port,
+        )
+
         self.ari_client = ARIClient(
             username=config.asterisk.username,
             password=config.asterisk.password,

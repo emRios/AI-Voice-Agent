@@ -294,3 +294,53 @@ class TestInjectProviderApiKeys:
         
         # Environment variable should take precedence
         assert config_data['providers']['openai']['api_key'] == "sk-env-key"
+
+
+class TestInjectAsteriskCredentialsTLS:
+    """Tests for HTTPS/TLS-related fields in inject_asterisk_credentials."""
+
+    def test_https_port_and_ari_base_url_from_env(self, monkeypatch):
+        """Should inject HTTPS host/port/scheme/ari_base_url from environment."""
+        from src.config.security import inject_asterisk_credentials
+
+        monkeypatch.setenv("ASTERISK_HOST", "fenixdevel-pbx.voxdata.cloud")
+        monkeypatch.setenv("ASTERISK_PORT", "8089")
+        monkeypatch.setenv("ASTERISK_SCHEME", "https")
+        monkeypatch.setenv("ARI_BASE_URL", "https://fenixdevel-pbx.voxdata.cloud:8089/ari")
+        monkeypatch.setenv("ASTERISK_ARI_USERNAME", "innegocsa")
+        monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "secret-pass")
+
+        config_data = {"asterisk": {"app_name": "asterisk-ai-voice-agent"}}
+        inject_asterisk_credentials(config_data)
+
+        ast_cfg = config_data["asterisk"]
+        assert ast_cfg["host"] == "fenixdevel-pbx.voxdata.cloud"
+        assert ast_cfg["port"] == 8089
+        assert ast_cfg["scheme"] == "https"
+        assert ast_cfg["ari_base_url"] == "https://fenixdevel-pbx.voxdata.cloud:8089/ari"
+        assert ast_cfg["username"] == "innegocsa"
+        assert ast_cfg["password"] == "secret-pass"
+        assert ast_cfg["app_name"] == "asterisk-ai-voice-agent"
+
+    def test_yaml_transport_preserved_when_env_missing(self):
+        """Should preserve YAML transport fields when env vars are not set."""
+        from src.config.security import inject_asterisk_credentials
+
+        config_data = {
+            "asterisk": {
+                "host": "yaml-host",
+                "port": 8088,
+                "scheme": "http",
+                "ari_base_url": "http://yaml-host:8088/ari",
+                "app_name": "custom-app",
+            }
+        }
+
+        inject_asterisk_credentials(config_data)
+
+        ast_cfg = config_data["asterisk"]
+        assert ast_cfg["host"] == "yaml-host"
+        assert ast_cfg["port"] == 8088
+        assert ast_cfg["scheme"] == "http"
+        assert ast_cfg["ari_base_url"] == "http://yaml-host:8088/ari"
+        assert ast_cfg["app_name"] == "custom-app"

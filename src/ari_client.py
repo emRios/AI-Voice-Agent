@@ -15,10 +15,12 @@ import aiohttp
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import websockets
 import structlog
-from urllib.parse import quote
+from urllib.parse import quote,urlparse
 
 from websockets.exceptions import ConnectionClosed
 from websockets.legacy.client import WebSocketClientProtocol
+ 
+
 
 from .config import AsteriskConfig
 from .logging_config import get_logger
@@ -32,11 +34,35 @@ class ARIClient:
         self.username = username
         self.password = password
         self.app_name = app_name
-        self.http_url = base_url
-        ws_host = base_url.replace("http://", "").split('/')[0]
+
+        # REST base (http/https) - normalizado
+        self.http_url = str(base_url).strip().rstrip("/")
+
+        parsed = urlparse(self.http_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(f"Invalid ARI base_url: {self.http_url}")
+
+        rest_scheme = parsed.scheme.lower()
+        ws_scheme = "wss" if rest_scheme == "https" else "ws"
+
+        # Normaliza path para garantizar /ari
+        base_path = parsed.path.rstrip("/")
+        if not base_path.endswith("/ari"):
+            base_path = f"{base_path}/ari" if base_path else "/ari"
+
         safe_username = quote(username)
         safe_password = quote(password)
-        self.ws_url = f"ws://{ws_host}/ari/events?api_key={safe_username}:{safe_password}&app={app_name}&subscribeAll=true&subscribe=ChannelAudioFrame"
+        safe_app = quote(app_name)
+
+        # Conserva los mismos parámetros de suscripción que tu fuente actual
+        self.ws_url = (
+            f"{ws_scheme}://{parsed.netloc}{base_path}/events"
+            f"?api_key={safe_username}:{safe_password}"
+            f"&app={safe_app}"
+            f"&subscribeAll=true"
+            f"&subscribe=ChannelAudioFrame"
+        )
+
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self.http_session: Optional[aiohttp.ClientSession] = None
         self.running = False
@@ -44,14 +70,50 @@ class ARIClient:
         self.active_playbacks: Dict[str, str] = {}
         self.audio_frame_handler: Optional[Callable] = None
 
+        # --- WebSocket + TLS knobs (ENV, sin hardcode) ---
+        self._ws_ping_interval = int(os.getenv("ARI_WS_PING_INTERVAL", "20"))
+        self._ws_ping_timeout = int(os.getenv("ARI_WS_PING_TIMEOUT", "20"))
+        self._ws_reconnect_min_ms = int(os.getenv("ARI_WS_RECONNECT_MIN_MS", "250"))
+        self._ws_reconnect_max_ms = int(os.getenv("ARI_WS_RECONNECT_MAX_MS", "5000"))
+
+        # TLS (solo aplica si wss)
+        self._tls_ca_file = os.getenv("ARI_TLS_CA_FILE")  # ruta CA PEM (opcional)
+        self._tls_insecure = os.getenv("ARI_TLS_INSECURE", "false").strip().lower() in ("1", "true", "yes")
+
+
     def on_event(self, event_type: str, handler: Callable):
         """Alias for add_event_handler for backward compatibility."""
         self.add_event_handler(event_type, handler)
 
+    # @retry(
+    #     stop=stop_after_attempt(5),
+    #     wait=wait_exponential(multiplier=1, min=2, max=10),
+    #     retry=retry_if_exception_type(Exception),
+    # )
+    # async def connect(self):
+    #     """Connect to the ARI WebSocket and establish an HTTP session."""
+    #     logger.info("Connecting to ARI...")
+    #     try:
+    #         # First, test HTTP connection to ensure ARI is available
+    #         self.http_session = aiohttp.ClientSession(auth=aiohttp.BasicAuth(self.username, self.password))
+    #         async with self.http_session.get(f"{self.http_url}/asterisk/info") as response:
+    #             if response.status != 200:
+    #                 raise ConnectionError(f"Failed to connect to ARI HTTP endpoint. Status: {response.status}")
+    #             logger.info("Successfully connected to ARI HTTP endpoint.")
+
+    #         # Then, connect to the WebSocket
+    #         self.websocket = await websockets.connect(self.ws_url)
+    #         self.running = True
+    #         logger.info("Successfully connected to ARI WebSocket.")
+    #     except Exception as e:
+    #         logger.error("Failed to connect to ARI, will retry...", error=str(e), exc_info=True)
+    #         if self.http_session and not self.http_session.closed:
+    #             await self.http_session.close()
+    #         raise
     @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(Exception),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(Exception),
     )
     async def connect(self):
         """Connect to the ARI WebSocket and establish an HTTP session."""
@@ -64,8 +126,8 @@ class ARIClient:
                     raise ConnectionError(f"Failed to connect to ARI HTTP endpoint. Status: {response.status}")
                 logger.info("Successfully connected to ARI HTTP endpoint.")
 
-            # Then, connect to the WebSocket
-            self.websocket = await websockets.connect(self.ws_url)
+            # Then, connect to the WebSocket (ws/wss según base_url)
+            self.websocket = await self._connect_websocket()
             self.running = True
             logger.info("Successfully connected to ARI WebSocket.")
         except Exception as e:
@@ -74,52 +136,163 @@ class ARIClient:
                 await self.http_session.close()
             raise
 
+    async def _connect_websocket(self) -> WebSocketClientProtocol:
+        """Open the ARI events WebSocket (supports ws/wss derived from base_url)."""
+        ssl_ctx = None
+
+        # Detectar si estamos en wss a partir del ws_url
+        if self.ws_url.startswith("wss://"):
+            import ssl
+
+            if self._tls_insecure:
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+                logger.warning("ARI_TLS_INSECURE enabled: TLS certificate validation is DISABLED for WSS.")
+            else:
+                ssl_ctx = ssl.create_default_context()
+                if self._tls_ca_file:
+                    ssl_ctx.load_verify_locations(cafile=self._tls_ca_file)
+                    logger.info("Using ARI_TLS_CA_FILE for WSS TLS verification.", ca_file=self._tls_ca_file)
+
+        return await websockets.connect(
+            self.ws_url,
+            ssl=ssl_ctx,
+            ping_interval=self._ws_ping_interval,
+            ping_timeout=self._ws_ping_timeout,
+        )
+
+
+    async def _safe_close_ws(self):
+        """Close websocket safely and reset reference."""
+        try:
+            if self.websocket is not None:
+                await self.websocket.close()
+        except Exception:
+            pass
+        finally:
+            self.websocket = None
+
+
+
+    # async def start_listening(self):
+    #     """Start listening for events from the ARI WebSocket."""
+    #     if not self.running or not self.websocket:
+    #         logger.error("Cannot start listening, client is not connected.")
+    #         return
+
+    #     logger.info("Starting ARI event listener.")
+    #     try:
+    #         # Note: PlaybackFinished is registered by Engine.start(). Avoid duplicate registration here.
+
+    #         async for message in self.websocket:
+    #             try:
+    #                 event_data = json.loads(message)
+    #                 event_type = event_data.get("type")
+                    
+    #                 # Handle audio frames from ExternalMedia connections
+    #                 if event_type == "ChannelAudioFrame":
+    #                     channel = event_data.get('channel', {})
+    #                     channel_id = channel.get('id')
+    #                     logger.debug("ChannelAudioFrame received", channel_id=channel_id)
+    #                     asyncio.create_task(self._on_audio_frame(channel, event_data))
+                    
+    #                 # Handle other events
+    #                 if event_type and event_type in self.event_handlers:
+    #                     for handler in self.event_handlers[event_type]:
+    #                         # Call the handler with just the event data
+    #                         asyncio.create_task(handler(event_data))
+    #             except json.JSONDecodeError:
+    #                 logger.warning("Failed to decode ARI event JSON", message=message)
+    #     except ConnectionClosed:
+    #         logger.warning("ARI WebSocket connection closed.")
+    #         self.running = False
+    #     except Exception as e:
+    #         logger.error("An error occurred in the ARI listener", exc_info=True)
+    #         self.running = False
+
     async def start_listening(self):
         """Start listening for events from the ARI WebSocket."""
-        if not self.running or not self.websocket:
+        if not self.running:
             logger.error("Cannot start listening, client is not connected.")
             return
 
         logger.info("Starting ARI event listener.")
-        try:
-            # Note: PlaybackFinished is registered by Engine.start(). Avoid duplicate registration here.
 
-            async for message in self.websocket:
-                try:
-                    event_data = json.loads(message)
-                    event_type = event_data.get("type")
-                    
-                    # Handle audio frames from ExternalMedia connections
-                    if event_type == "ChannelAudioFrame":
-                        channel = event_data.get('channel', {})
-                        channel_id = channel.get('id')
-                        logger.debug("ChannelAudioFrame received", channel_id=channel_id)
-                        asyncio.create_task(self._on_audio_frame(channel, event_data))
-                    
-                    # Handle other events
-                    if event_type and event_type in self.event_handlers:
-                        for handler in self.event_handlers[event_type]:
-                            # Call the handler with just the event data
-                            asyncio.create_task(handler(event_data))
-                except json.JSONDecodeError:
-                    logger.warning("Failed to decode ARI event JSON", message=message)
-        except ConnectionClosed:
-            logger.warning("ARI WebSocket connection closed.")
-            self.running = False
-        except Exception as e:
-            logger.error("An error occurred in the ARI listener", exc_info=True)
-            self.running = False
+        backoff_ms = self._ws_reconnect_min_ms
 
+        while self.running:
+            try:
+                if not self.websocket:
+                    self.websocket = await self._connect_websocket()
+                    logger.info("ARI WebSocket reconnected.")
+
+                # Note: PlaybackFinished is registered by Engine.start(). Avoid duplicate registration here.
+
+                async for message in self.websocket:
+                    try:
+                        event_data = json.loads(message)
+                        event_type = event_data.get("type")
+
+                        # Handle audio frames from ExternalMedia connections
+                        if event_type == "ChannelAudioFrame":
+                            channel = event_data.get('channel', {})
+                            channel_id = channel.get('id')
+                            logger.debug("ChannelAudioFrame received", channel_id=channel_id)
+                            asyncio.create_task(self._on_audio_frame(channel, event_data))
+
+                        # Handle other events
+                        if event_type and event_type in self.event_handlers:
+                            for handler in self.event_handlers[event_type]:
+                                # Call the handler with just the event data
+                                asyncio.create_task(handler(event_data))
+
+                    except json.JSONDecodeError:
+                        logger.warning("Failed to decode ARI event JSON", message=message)
+
+                # Si salimos del async-for sin excepción, el stream terminó
+                logger.warning("ARI WebSocket stream ended (no exception). Forcing reconnect.")
+                await self._safe_close_ws()
+
+            except ConnectionClosed:
+                logger.warning("ARI WebSocket connection closed.")
+                await self._safe_close_ws()
+
+            except Exception:
+                logger.error("An error occurred in the ARI listener", exc_info=True)
+                await self._safe_close_ws()
+
+            if not self.running:
+                break
+
+            await asyncio.sleep(backoff_ms / 1000.0)
+            backoff_ms = min(int(backoff_ms * 1.6), self._ws_reconnect_max_ms)
+
+
+
+    # async def disconnect(self):
+    #     """Disconnect from the ARI WebSocket and close the HTTP session."""
+    #     self.running = False
+    #     if self.websocket:
+    #         await self.websocket.close()
+    #         self.websocket = None
+    #     if self.http_session and not self.http_session.closed:
+    #         await self.http_session.close()
+    #         self.http_session = None
+    #     logger.info("Disconnected from ARI.")
     async def disconnect(self):
         """Disconnect from the ARI WebSocket and close the HTTP session."""
         self.running = False
-        if self.websocket:
-            await self.websocket.close()
-            self.websocket = None
+
+        await self._safe_close_ws()
+
         if self.http_session and not self.http_session.closed:
             await self.http_session.close()
             self.http_session = None
+
         logger.info("Disconnected from ARI.")
+
+
 
     def add_event_handler(self, event_type: str, handler: Callable):
         """Register a handler for a specific ARI event type."""
