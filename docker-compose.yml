@@ -41,9 +41,8 @@ services:
       - HEALTH_BIND_HOST=0.0.0.0
       - AUDIO_TRANSPORT=audiosocket
       - AUDIOSOCKET_PORT=9092
-      - AUDIOSOCKET_HOST=45.186.105.162   # ✅ FORZA TU IP PÚBLICA
+      - AUDIOSOCKET_HOST=10.50.0.2
       - ASTERISK_APP_NAME=asterisk-ai-voice-agent
-      - ASTERISK_HOST=104.131.125.67
     tty: true
     stdin_open: true
     restart: unless-stopped

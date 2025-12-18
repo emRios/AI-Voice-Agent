@@ -4,13 +4,13 @@ asterisk:
 audio_transport: audiosocket
 audiosocket:
   format: slin
-  host: "45.186.105.162"
+  host: "10.50.0.2"
   port: 9092
 barge_in:
-  enabled: false
+  enabled: true
   energy_threshold: 700
   initial_protection_ms: 100
-  min_ms: 150
+  min_ms: 50
   post_tts_end_protection_ms: 800
 config_version: 4
 contexts:
